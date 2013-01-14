@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright (c) 2007-2012 Noah Kantrowitz <noah@coderanger.net>
+# All rights reserved.
+#
+# This software is licensed as described in the file COPYING, which
+# you should have received as part of this distribution.
+#
+
 import subprocess
 import re
 
@@ -14,7 +23,7 @@ from trac.ticket.model import Ticket
 from trac.ticket.query import Query
 from trac.config import Option, BoolOption, ChoiceOption
 from trac.resource import ResourceNotFound
-from trac.util import to_unicode
+from trac.util import escape, to_unicode
 from trac.util.html import html, Markup
 from trac.util.text import shorten_line
 from trac.util.compat import set, sorted, partial
@@ -74,7 +83,7 @@ class MasterTicketsModule(Component):
 
             # Add link to depgraph if needed
             if links:
-                add_ctxtnav(req, 'Depgraph', req.href.depgraph(tkt.id))
+                add_ctxtnav(req, 'Depgraph', req.href.depgraph('ticket', tkt.id))
             
             for change in data.get('changes', {}):
                 if not change.has_key('fields'):
@@ -174,29 +183,28 @@ class MasterTicketsModule(Component):
 
     # IRequestHandler methods
     def match_request(self, req):
-        return req.path_info.startswith('/depgraph')
+        match = re.match(r'^/depgraph/(?P<realm>ticket|milestone)/(?P<id>((?!depgraph.png).)+)(/depgraph.png)?$', req.path_info)
+        if match:
+            req.args['realm'] = match.group('realm')
+            req.args['id'] = match.group('id')
+            return True
 
     def process_request(self, req):
-        path_info = req.path_info[10:]
+        realm = req.args['realm']
+        id = req.args['id']
         
-        if not path_info:
-            raise TracError('No ticket specified')
-        
-        #list of tickets to generate the depgraph for
-        tkt_ids=[]
-        milestone=None
-        split_path = path_info.split('/', 2)
-
         #Urls to generate the depgraph for a ticket is /depgraph/ticketnum
         #Urls to generate the depgraph for a milestone is /depgraph/milestone/milestone_name
-        if split_path[0] == 'milestone':
+        
+        #List of tickets to generate the depgraph for
+        tkt_ids=[]
+        if realm == 'milestone':
             #we need to query the list of tickets in the milestone
-            milestone = split_path[1]
-            query=Query(self.env, constraints={'milestone' : [milestone]}, max=0)
-            tkt_ids=[fields['id'] for fields in query.execute()]
+            query = Query(self.env, constraints={'milestone': [id]}, max=0)
+            tkt_ids = [fields['id'] for fields in query.execute(req)]
         else:
             #the list is a single ticket
-            tkt_ids = [int(split_path[0])]
+            tkt_ids = [int(id)]
 
         #the summary argument defines whether we place the ticket id or
         #it's summary in the node's label
@@ -205,7 +213,7 @@ class MasterTicketsModule(Component):
             label_summary=int(req.args.get('summary'))
 
         g = self._build_graph(req, tkt_ids, label_summary=label_summary)
-        if path_info.endswith('/depgraph.png') or 'format' in req.args:
+        if req.path_info.endswith('/depgraph.png') or 'format' in req.args:
             format = req.args.get('format')
             if format == 'text':
                 #in case g.__str__ returns unicode, we need to convert it in ascii
@@ -239,13 +247,12 @@ class MasterTicketsModule(Component):
             else:
                 add_ctxtnav(req, 'With labels', req.href(req.path_info, summary=1))
 
-            if milestone is None:
-                tkt = Ticket(self.env, tkt_ids[0])
-                data['tkt'] = tkt
-                add_ctxtnav(req, 'Back to Ticket #%s'%tkt.id, req.href.ticket(tkt.id))
+            if realm == 'milestone':
+                add_ctxtnav(req, 'Back to Milestone: %s' % id, req.href.milestone(id))
+                data['milestone'] = id
             else:
-                add_ctxtnav(req, 'Back to Milestone %s'%milestone, req.href.milestone(milestone))
-            data['milestone'] = milestone
+                data['ticket'] = id
+                add_ctxtnav(req, 'Back to Ticket #%s' % id, req.href.ticket(id))
             data['graph'] = g
             data['graph_render'] = partial(g.render, self.dot_path)
             data['use_gs'] = self.use_gs
@@ -289,7 +296,7 @@ class MasterTicketsModule(Component):
             node['fillcolor'] = tkt['status'] == 'closed' and self.closed_color or self.opened_color
             node['URL'] = req.href.ticket(tkt.id)
             node['alt'] = u'Ticket #%s'%tkt.id
-            node['tooltip'] = tkt['summary']
+            node['tooltip'] = escape(tkt['summary'])
             if self.highlight_target and tkt.id in tkt_ids:
                 node['penwidth'] = 3
             
